@@ -1,5 +1,5 @@
-# BSON compare
-## BSON 中不同类型的比较问题
+# 1. BSON compare
+## 1.1 BSON 中不同类型的比较问题
 文档数据库的魅力就在于，你可以随时增加和删除字段，并且可以随时变换数据类型。但是这也带一个问题：不同数据类型之间如何比较大小。   
 比如在一个表中插入如下数据：
 ```
@@ -39,7 +39,7 @@ db.coll.find().sort({a:1})
 以上图的 Array 和 Date 为例，不管 Array 多长，Date 的时间多小，Array 都是比 Date 要小的。   
 另外 Int, Long, Double, Decimal 被统一归类为 Numbers 类型，Symbol 和 String 也归类为同一种类型。
 
-## BSON compare 比较流程
+## 1.2 BSON compare 比较流程
 BSON 的比较流程可以参考 BSONObj::woCompare 的实现（TODO src/mongo/bson/bsonobj.cpp:148）。   
 基本流程为：   
 1. 遍历 2 个 BSONObj 中的 BSONElement，使用 BSONElement::woCompare 对比 2 个 BSONElement 的大小；
@@ -53,13 +53,13 @@ BSON 的比较流程可以参考 BSONObj::woCompare 的实现（TODO src/mongo/b
 3. Object 内部第 1 个字段都是 "c", 包含的 Value 都是 "1";
 4. Object 内部第 2 个字段都是 "d", 第 1 个 BSON 包含的值是 true, 第 2 个 BSON 包含的值是 false. 因此到这一步才决出 BSON1 > BSON2;
 
-## BSON compare 的不足
+## 1.3 BSON compare 的不足
 从前面的分析可以看出，BSON 的比较是非常复杂而且消耗资源的。每次比较都伴随着 2 个 BSON 解析，并包含类型转换和比较过程，比如 number 类型之间的 int/long/double 转换等。   
 正如 MongoDB [官方文档](https://github.com/mongodb/mongo/blob/r5.0.0/src/mongo/db/catalog/README.md#keystring)中所描述的，MongoDB 运行过程中要处理大量的 BSON 比较。比如表中有一个 {x:1, y:1} 联合索引，现在按照  {x:42.0, y:"hello"} 查询条件找目标文档，在数据量比较大的场景下，可能需要 10 多次比较。如果使用 BSON 原生的比较方式，会暴漏非常严重的性能问题：   
 1. 有没有一种方式，能够将 BSON 比较转换成 memcmp 二进制比较，从而提升性能？
 2. MongoDB 底层采用 KV 引擎存储索引。如果 KV 引擎还需要理解文档模型，支持 BSON 比较，必然会破坏 MongoDB 的架构设计，增加存储引擎的复杂度；
 
-# KeyString
+# 2. KeyString
 
 BSON 的比较过程比较繁琐，涉及到反序列化，类型转换等。BSON 虽然使用二进制进行存储，却不能直接使用二进制方式进行比较。  
 BSON 不能直接使用 memcmp 进行二进制比较的原因至少包含以下几点：  
@@ -78,7 +78,7 @@ x > y ⇔ memcmp(t(x),t(y)) > 0
 x = y ⇔ memcmp(t(x),t(y)) = 0
 ```
 
-## KeyString 组织方式
+## 2.1 KeyString 组织方式
 KeyString 的组成方式为：   
 ```
 字段1类型 +  字段1二进制 + 字段2类型  +  字段2二进制 + ... + <discriminator> + 结尾标识符(0x04) + <recordId>
@@ -100,8 +100,8 @@ MongoDB 中使用 [Ordering](https://github.com/mongodb/mongo/blob/r4.0.28/src/m
 而如果 String 中已经包含了 0x00，则使用 0x00FF 分界符来替代。通过这种处理方式，能保证 String 的前缀值一定是小于 String 本身的。  
 BinData 类型比较特别，在 KeyString 编码时，会将长度信息放在二进制内容前面，因为在 BSON 的比较规则中，[BinData 长度越长，则值越大](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/bson/bsonelement.cpp#L452-L458)。KeyString 的比较规则和 BSON 保持一致。
 
-## KeyString 对数值类型的编码
-在所有 BSON 类型中，数值类型（Numberic）的编码是最关键最复杂的部分。主要原因为 Double  采用 IEEE 754 标准的 8 字节方式表示， Double 相互直接能通过二进制比较，但是不能和 Long 直接进行二进制比较。举例如下：  
+## 2.2 KeyString 对数值类型的编码
+在所有 BSON 类型中，数值类型（Numberic）的编码是最关键最复杂的部分。很大一部分原因是 Double  采用 IEEE 754 标准的 8 字节方式表示， Double 相互直接能通过二进制比较，但是不能和 Long 直接进行二进制比较。举例如下：  
 <TODO , double 和 long 的二进制图，以及不能直接比较的原因>  
 除此之外，Int 占 4 字节，Long 占 8 字节，也不能直接使用原始的大端模式进行比较。  
 对于这些问题，KeyString 的解决方案是：  
@@ -194,14 +194,14 @@ encoding = endian::nativeToBig(encoding);
 _append(encoding, isNegative ? !invert : invert);
 ```
 
-# KeyString 性能
+# 3. KeyString 性能
 再回到我们最开始的问题，BSON 的比较太复杂导致性能不佳，所以诞生了 KeyString，那么：   
 1. KeyString 的实际性能如何？
 2. 相比 BSON Compare，KeyString 能有多大改善？
 
 为了说明上述问题，我们对 KeyString 和 BSON 的比较性能进行性能测试。   
 
-## 测试方法
+## 3.1 测试方法
 1. 测试 2 条 BSON 文档，BSON compare 的平均耗时；
 2. 将 BSON 文档序列化成 KeyString（不包含 fieldName）， 测试 2 个 KeyString compare 的平均耗时；
 
@@ -214,7 +214,7 @@ _append(encoding, isNegative ? !invert : invert);
 ```
 值的注意的是，这 2 条 BSON 唯一的区别是最后一个 Double 类型的小数位不同。这样 BSON/KeyString 在比较时，会依次比较 String/Int/Long/Double 多种类型，并在最后一个 Double 类型上决一胜负。
 
-## 测试工具
+## 3.2 测试工具
 测试工具为 MongoDB [内核代码内置的 Benchmark 框架](https://github.com/mongodb/mongo/wiki/Write-Benchmark-Tests), 源于 Google Benchmark.
 
 测试代码为：
@@ -367,7 +367,7 @@ BENCHMARK(BM_StripBSON2KeyString)
     ->ThreadRange(1, 1);
 ```
 
-## 结果分析
+## 3.3 结果分析
 测试结果如下：
 ```
 Run on (8 X 2992.97 MHz CPU s)
@@ -392,8 +392,8 @@ BSON 直接比较平均耗时： __173 ns__；
 1.  KeyString 的比较性能相比 BSON 提升了1-2 个数量级；  
 2.  但是 BSON 生成 KeyString 的代价比较大。因此**适合 1 次生成多次比较的场景**，索引就是最典型的场景；  
 
-# KeyString 使用场景
+# 4. KeyString 使用场景
 
 
 
-# 总结
+# 5. 总结
