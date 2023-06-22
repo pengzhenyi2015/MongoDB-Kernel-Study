@@ -66,7 +66,8 @@ BSON 不能直接使用 memcmp 进行二进制比较的原因至少包含以下�
 1. __存在干扰信息__。BSON 会将自身长度使用小端模式放在头部 4 字节，通过上面的例子可以看到，BSON 的大小和自身的长度并没有直接关系。如果直接使用二进制比较，可能会得到一个错误结果；  
 2. __类型问题__。Int/long/double 等数字类型在 BSON 中都有不同的 type，不能用来比较。必须归一化成同一种 type, 放在同一个维度作比较；   
 3. __顺序问题__。BSON 中多个字段的比较顺序可能有区别。比如创建了一个 {a : 1, b : 1, c : -1} 索引，a 和 b 升序，c 降序，BSON 很难处理这种二进制比较场景；   
-4. __大小端问题__。BSON 中采用小端模式存储数字，这种低地址存低字节的方式并不适合按地址进行二进制比较；   
+4. __大小端问题__。BSON 中采用小端模式存储数字，这种低地址存低字节的方式并不适合按地址进行二进制比较；
+   ![大小端问题](https://github.com/pengzhenyi2015/MongoDB-Kernel-Study/assets/16788801/a67bf1f0-7338-4c90-a9da-4d0a629e2d4c)
 5. __变长 Value 的比较问题__。String/BinData/Object/Array 这种长度不固定的类型，可能会对比较产生干扰。比如 { a : <String1>, b : <Int1>} 与 {a : <String2>, b : <Int2>} 进行比较，如果 String1 是 String2 的前缀，String2 长度更长，则进行二进制比较时可能出现 Int1 和 String2 末尾部分进行比较的情况。如果出现这种情况，很有可能产生错误的比较结果。 
 
 为了解决上述 BSON compare 的不足，KeyString 营运而生。   
@@ -96,13 +97,15 @@ MongoDB 中使用 [Ordering](https://github.com/mongodb/mongo/blob/r4.0.28/src/m
 与 BSON 不同，KeyString 会对 Int/Long/Double 等数值类型进行处理之后转为大端模式存储，包括数值类型派生出的 [Timestamp, Date](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/key_string.cpp#L447-L459) 等类型也是如此;  
 ### 6. 使用分界符处理变长类型的比较问题
 对于 String/Array/Object 等变长类型，如果采用和其他类型相同的编码方式，可能出现跨字段比较的问题。比如 {"a": "abcd", "b": 1} 和  {"a": "abc", "b": 2} 比较，由于第 1 个 KeyString 的 "a" 字段多一个字符 'd', 在按字节比较时，可能出现第一个 KeyString 中 “a” 字段的 'd' 和第二个 KeyString 中 "b" 字段类型比较的情形，这样结果是不准确的 。因此，KeyString 会在这类字段的编码结尾处添加 0x00 分界符 来避免跨字段错位比较导致结果不准确的问题。示意图如下：
-<TODO 画个新图>  
+![跨字段比较的问题](https://github.com/pengzhenyi2015/MongoDB-Kernel-Study/assets/16788801/fc801cbb-66f5-44ae-ab07-640da657036f)
+
 而如果 String 中已经包含了 0x00，则使用 0x00FF 分界符来替代。通过这种处理方式，能保证 String 的前缀值一定是小于 String 本身的。  
 BinData 类型比较特别，在 KeyString 编码时，会将长度信息放在二进制内容前面，因为在 BSON 的比较规则中，[BinData 长度越长，则值越大](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/bson/bsonelement.cpp#L452-L458)。KeyString 的比较规则和 BSON 保持一致。
 
 ## 2.2 KeyString 对数值类型的编码
 在所有 BSON 类型中，数值类型（Numberic）的编码是最关键最复杂的部分。很大一部分原因是 Double  采用 IEEE 754 标准的 8 字节方式表示， Double 相互直接能通过二进制比较，但是不能和 Long 直接进行二进制比较。举例如下：  
-<TODO , double 和 long 的二进制图，以及不能直接比较的原因>  
+![Double 和 Long 的二进制比较](https://github.com/pengzhenyi2015/MongoDB-Kernel-Study/assets/16788801/5ab3373b-236b-4183-8b80-1fb8ae19c3d1)
+  
 除此之外，Int 占 4 字节，Long 占 8 字节，也不能直接使用原始的大端模式进行比较。  
 对于这些问题，KeyString 的解决方案是：  
 1. __对于不同长度的整型 Int  和 Long, 按照真实有效字节数重新划分子类型__。这里说的真实有效字节是指排除了前导 0 后剩余的字节，通过只编码真实有效字节来实现不同长度整型的比较。比如 Int(0x00001234) 和 Long(0x0000000000001234) 同属于 "2字节整型" 的子类型， KeyString 只会再对有效部分 0x1234 进行编码，这样保证上述 2 个整型的类型和值都相等。
@@ -163,7 +166,7 @@ KeyString 对整数部分的编码进行了巧妙的设计，来避免跨字段�
 1. 对于整型（Int/Long），[编码时左移一位](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/key_string.cpp#L1042)： value << 1， 比如 129 编码成 258;  
 2. 对于 Double，整数部分编码时左移一位，如果存在有效小数位，[则再加 1](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/key_string.cpp#L603)，比如 129.125 的整数部分编码为: (129<<1) + 1 = 259；如果 Double 不存在有效小数位，则编码方式和 Long 相同，[只移位不加1](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/key_string.cpp#L566).  
 
-<TODO , 图，Double 转 KeyString 的例子>  
+
 
 上述流程位于 [KeyString::_appendDoubleWithoutTypeBits](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/key_string.cpp#L589-L607) 中，上述例子的执行情况如下，通过注释来标识每一步的结果：  
 ```
