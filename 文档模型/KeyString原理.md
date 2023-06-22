@@ -166,6 +166,7 @@ KeyString 对整数部分的编码进行了巧妙的设计，来避免跨字段�
 1. 对于整型（Int/Long），[编码时左移一位](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/key_string.cpp#L1042)： value << 1， 比如 129 编码成 258;  
 2. 对于 Double，整数部分编码时左移一位，如果存在有效小数位，[则再加 1](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/key_string.cpp#L603)，比如 129.125 的整数部分编码为: (129<<1) + 1 = 259；如果 Double 不存在有效小数位，则编码方式和 Long 相同，[只移位不加1](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/key_string.cpp#L566).  
 
+![Double 转 KeyString流程](https://github.com/pengzhenyi2015/MongoDB-Kernel-Study/assets/16788801/d8e956e7-1c8a-46d3-a8ad-a2a208a77995)
 
 
 上述流程位于 [KeyString::_appendDoubleWithoutTypeBits](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/key_string.cpp#L589-L607) 中，上述例子的执行情况如下，通过注释来标识每一步的结果：  
