@@ -416,14 +416,14 @@ RecordId 可以作为一个可选项在 KeyString 存储，一般会作为后缀
 2. 除去头尾各 3 个 bit 外，其余的 bit 表示了 RecordId 的 int64 值；
 
 举例如下，看看 RecordId(259) 和 RecordId(65536) 在 KeyString 中是如何编码的：   
-<TODO 图>
+![image](https://github.com/pengzhenyi2015/MongoDB-Kernel-Study/assets/16788801/c1e5f9ca-cb24-4d82-a7e3-b5997484a719)
 
 相关代码可以参考 [KeyString::appendRecordId](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/key_string.cpp#L387-L431)
-> 为什么 RecordId 要使用变长编码，而不是直接用 8 字节表示。我认为是 RecordId 作为一个从 0 开始自增的 id, 绝大多数情况下都是不足 8 字节的，甚至不足 4 字节。变长编码应该还是为了节省空间。
+> 为什么 RecordId 要使用变长编码，而不是直接用 8 字节表示。我认为是 RecordId 作为一个从 1 开始自增的 id, 绝大多数情况下都不足 8 字节，甚至不足 4 字节。变长编码应该还是为了节省空间。
 
 结合 [官方文档](https://github.com/mongodb/mongo/blob/r5.0.0/src/mongo/db/catalog/README.md#use-in-wiredtiger-indexes) 和代码，将 MongoDB 中索引的组织形式总结如下：  
 
-|Index type|Key|Value|参考代码|    
+|Index type|Key|Value|参考代码（4.0版本）|    
 |:-|:-|:-|:-|    
 |`_id` index|`KeyString` without `RecordId`|`RecordId` and optionally `TypeBits`| [WiredTigerIndexUnique::_insertTimestampUnsafe(r4.0.28)](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/wiredtiger/wiredtiger_index.cpp#L1344-L1407)|
 |non-unique index|`KeyString` with `RecordId`|optionally `TypeBits`| [WiredTigerIndexStandard::_insert](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/wiredtiger/wiredtiger_index.cpp#L1649-L1675)|
