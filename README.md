@@ -13,7 +13,7 @@ MongoDB 作为一个开源文档数据库，凭借其灵活可扩展、分布式
 |参考文档|	链接|
 |:--|:--|
 |MongoDB 官方操作手册|	https://www.mongodb.com/docs/manual/|
-|MongoDB Github Wiki|	https://github.com/mongodb/mongo/wiki|
+|MongoDB Github Wiki|	https://github.com/mongodb/mongo/wiki<br>强烈推荐 Wiki 中关于 Sharding 和 Replication 的描述，每次学习都受益匪浅|
 |MongoDB 官方课程|	https://learn.mongodb.com/|
 |MongoDB 中文社区|	https://mongoing.com/|
 |MongoDB 官方设计文档|	https://github.com/mongodb/specifications/tree/master|
