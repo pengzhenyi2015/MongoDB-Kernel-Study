@@ -70,7 +70,7 @@ BSON 不能直接使用 memcmp 进行二进制比较的原因至少包含以下�
    ![大小端问题](https://github.com/pengzhenyi2015/MongoDB-Kernel-Study/assets/16788801/a67bf1f0-7338-4c90-a9da-4d0a629e2d4c)
 5. __变长 Value 的比较问题__。String/BinData/Object/Array 这种长度不固定的类型，可能会对比较产生干扰。比如 { a : <String1>, b : <Int1>} 与 {a : <String2>, b : <Int2>} 进行比较，如果 String1 是 String2 的前缀，String2 长度更长，则进行二进制比较时可能出现 Int1 和 String2 末尾部分进行比较的情况。如果出现这种情况，很有可能产生错误的比较结果。 
 
-为了解决上述 BSON compare 的不足，KeyString 营运而生。   
+为了解决上述 BSON compare 的不足，KeyString 应运而生。   
 KeyString 可以看作一个可以直接通过 memcmp 进行比较的 string. 它提供了一种方法 t, 将 BSON 的比较等价到 KeyString 的比较。   
 对于 BSON x 和 BSON y, 存在规则 t, 使得：   
 ```
@@ -111,6 +111,119 @@ BinData 类型比较特别，在 KeyString 编码时，会将长度信息放在�
 1. __对于不同长度的整型 Int  和 Long, 按照真实有效字节数重新划分子类型__。这里说的真实有效字节是指排除了前导 0 后剩余的字节，通过只编码真实有效字节来实现不同长度整型的比较。比如 Int(0x00001234) 和 Long(0x0000000000001234) 同属于 "2字节整型" 的子类型， KeyString 只会再对有效部分 0x1234 进行编码，这样保证上述 2 个整型的类型和值都相等。
 2. __对于 Double 类型和 Int/Long 整型之间的比较，需要分情况讨论__。由于Double 能表示的范围是整型的超集，因此超出整型数值范围的 Double 可以直接通过子类型进行区分和比较；Double 和 Long 数值重合的部分，子类型应该相同，整数部分的表示也应该相同，小数部分编码在整数部分的后面。
 
+KeyString 对于数值划分子类型的逻辑参考附录 A，基本的思想就是 2 字节整数小于 3 字节整数，3字节整数小于 4 字节整数，以此类推。
+
+对于 Double 和 Long 不存在交集的部分，比如 (-1, 0), (0, 1), (-∞, min<long>), (max<long>, +∞)，由于可以直接通过类型区分 Long 和 Double 的大小，所以值比较只会存在 Double 类型内部。因此，KeyString 对这些子类型的 Double 的编码相对容易很多，只需要按照 Double 原有格式稍作处理，然后使用大端模式编码即可。具体可以参考代码中 [KeyString::_appendSmallDouble](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/key_string.cpp#L887-L923) 和 [KeyString::_appendLargeDouble](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/key_string.cpp#L925-L948) 的处理流程。  
+
+对于 Double 和 Long 存在交集的部分，KeyString 对 Double 的编码需要在数据类型和整数格式上与 Long 对齐，然后再加上小数部分。由于小数部分导致 Double 的编码可能更长，因此会出现前文提到的变长类型比较错位的情况。比如 {"a" : NumberLong(129), "b" : "1"} 与 {"a": Double(129.125), "b": "2"} 转成 KeyString 进行比较，可能出现前一个值中的 "b" 字段与后一个值中 "a" 字段的小数部分进行比较的情况，这样会导致结果不准确。  
+KeyString 对整数部分的编码进行了巧妙的设计，来避免跨字段错位比较的问题。还是上面的例子，我们既然已经知道 Double(129.125) 存在有效小数位，可以直接通过整数部分的编码使得 Double(129.125) 的整数部分大于 Long(129)。具体的实现方式为：  
+1. 对于整型（Int/Long），[编码时左移一位](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/key_string.cpp#L1042)： value << 1， 比如 129 编码成 258;  
+2. 对于 Double，整数部分编码时左移一位，如果存在有效小数位，[则再加 1](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/key_string.cpp#L603)，比如 129.125 的整数部分编码为: (129<<1) + 1 = 259；如果 Double 不存在有效小数位，则编码方式和 Long 相同，[只移位不加1](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/key_string.cpp#L566).  
+
+![Double 转 KeyString流程](https://github.com/pengzhenyi2015/MongoDB-Kernel-Study/assets/16788801/d8e956e7-1c8a-46d3-a8ad-a2a208a77995)
+
+
+上述流程位于 [KeyString::_appendDoubleWithoutTypeBits](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/key_string.cpp#L589-L607) 中，上述例子的每一部执行过程参考附录 B. 
+
+# 3. KeyString 性能
+再回到我们最开始的问题，BSON 的比较太复杂导致性能不佳，所以诞生了 KeyString，那么：   
+1. KeyString 的实际性能如何？
+2. 相比 BSON Compare，KeyString 能有多大改善？
+
+为了说明上述问题，我们对 KeyString 和 BSON 的比较性能进行性能测试。   
+
+## 3.1 测试方法
+1. 测试 2 条 BSON 文档，BSON compare 的平均耗时；
+2. 将 BSON 文档序列化成 KeyString（不包含 fieldName）， 测试 2 个 KeyString compare 的平均耗时；
+
+用于测试的 2 条 BSON 文档为：
+```
+第 1 条 BSON 文档：
+{"id":"zhenyitest", "description": "test performance of BSON compare", "int": NumberInt(1234), "long": NumberLong(123456789), "double1": 1.23456789, "double2":12345678.9}
+第 2 条 BSON 文档：
+{"id":"zhenyitest", "description": "test performance of BSON compare", "int": NumberInt(1234), "long": NumberLong(123456789), "double1": 1.23456789, "double2":12345678.8}
+```
+值的注意的是，这 2 条 BSON 唯一的区别是最后一个 Double 类型的小数位不同。这样 BSON/KeyString 在比较时，会依次比较 String/Int/Long/Double 多种类型，并在最后一个 Double 类型上决一胜负。
+
+## 3.2 测试工具
+测试工具为 MongoDB [内核代码内置的 Benchmark 框架](https://github.com/mongodb/mongo/wiki/Write-Benchmark-Tests), 源于 Google Benchmark.
+
+详细 Benchmark 代码参考附录 C.
+
+## 3.3 结果分析
+测试结果如下：
+```
+Run on (8 X 2992.97 MHz CPU s)
+----------------------------------------------------------------------------
+Benchmark                                     Time           CPU Iterations
+----------------------------------------------------------------------------
+BM_BSONCompare/threads:1                    173 ns        173 ns    4152481
+BM_BSON2KeyStringCompare/threads:1          689 ns        688 ns     840071
+BM_KeyStringCompare/threads:1                 6 ns          6 ns  122880289
+BM_BSON2KeyString/threads:1                 316 ns        315 ns    2218813
+BM_BSON2Strip/threads:1                     106 ns        105 ns    7145237
+BM_StripBSON2KeyString/threads:1            217 ns        215 ns    3229084
+```
+
+BSON 直接比较平均耗时： __173 ns__；  
+2 个 BSON 都转成 KeyString 再比较：__689 ns__  
+- 其中，KeyString 的比较只需要 __6 ns__  , 但是每个 BSON 转 KeyString 需要 300+ ns  
+    - 其中转换的第一步：strip BSON 的 fieldName 耗时 100+ ns  
+    - 转换的第二步：BSON 转 KeyString 耗时 200+ns  
+
+总结：  
+1.  KeyString 的比较性能相比 BSON 提升了1-2 个数量级；  
+2.  但是 BSON 生成 KeyString 的代价比较大。因此**适合 1 次生成多次比较的场景**，索引就是最典型的场景；  
+3.  对于非一次生成多次使用的场景，直接使用 BSON 进行比较反而更合适。比如[内存排序（SORT_STAGE）比较算法](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/exec/sort.cpp#L64)就是直接使用的 BSON compare.
+
+# 4. KeyString 在索引中的使用
+## 4.1 MongoDB 索引的组织形式
+MongoDB 中的索引，在 WiredTiger 存储引擎中使用 Key-Value 对的方式进行组织和存储。我们知道数据库中索引的作用，就是根据索引字段的值快速找到文档/数据行的存储位置，即建立索引字段到存储位置的映射。其中索引字段的值采用 KeyString 来表示，而存储位置则是由 RecordId 来表示。    
+
+KeyString 在本文已经有了详细描述，这里有必要说明一下 RecordId 的概念。我们知道 MongoDB 是 schema-free 的，每个表没有明确的主键，那么 MongoDB 表在底层 KV 引擎中怎么组织呢？或者说在 KV 引擎中存储的时候 Value 是 BSON 文档，那么 Key 是什么？   
+
+>可能有人会反驳说 `_id` 是 MongoDB 中的主键，但我认为并不准确。原因1： MongoDB 并不使用 _id 来组织表，如果直接使用 _id 字段查数据，也要先查 _id 索引，再查表，通俗一点说就是要查 2 个 Btree；原因2：有些表没有 _id 字段（比如 oplog 表）。因此，_id 索引一个特殊的索引，自带唯一属性，行为上和二级索引类似。
+
+为了解决没有主键的问题，MongoDB 在 KV 引擎中存储数据时，为每条文档指定了一个唯一的 RecordId. MongoDB 中每个表都有独立的 RecordId 命名空间，RecordId 本质上是一个[从 1 自增](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/wiredtiger/wiredtiger_record_store.cpp#L1730)的 int64 整数。MongoDB 使用 (RecordId, BSON) 的 KV 对形式在 KV 引擎中存储数据。   
+
+MongoDB 中使用索引查询数据会有 2 个阶段：  
+1. __查索引__，通过索引字段的 KeyString 找到对应的 RecordId；
+2. __查数据__, 根据 RecordId 找到 BSON 文档；
+
+RecordId 可以作为一个可选项在 KeyString 存储，一般会作为后缀的形式存在。在 Keystring 的编码上，并没有直接使用 8 字节存储 RecordId 的值，而是采用了变长编码的形式。规则如下：
+1. 头字节的头 3 个 bit，以及尾字节的末尾 3 个 bit, 存储了编码所需的额外字节数。由于 3 个 bit 最大能表示的数是 7，所以 RecordId 最多能占用的字节数为 7+2=9, 其中数据的有效 bit 占位为 9*8-(2*3) = 66。RecordId 最少占用的字节数为 2 字节；
+2. 除去头尾各 3 个 bit 外，其余的 bit 表示了 RecordId 的 int64 值；
+
+举例如下，看看 RecordId(259) 和 RecordId(65536) 在 KeyString 中是如何编码的：   
+![image](https://github.com/pengzhenyi2015/MongoDB-Kernel-Study/assets/16788801/c1e5f9ca-cb24-4d82-a7e3-b5997484a719)
+
+相关代码可以参考 [KeyString::appendRecordId](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/key_string.cpp#L387-L431)
+> 为什么 RecordId 要使用变长编码，而不是直接用 8 字节表示。我认为是 RecordId 作为一个从 1 开始自增的 id, 绝大多数情况下都不足 8 字节，甚至不足 4 字节。变长编码应该还是为了节省空间。
+
+结合 [官方文档](https://github.com/mongodb/mongo/blob/r5.0.0/src/mongo/db/catalog/README.md#use-in-wiredtiger-indexes) 和代码，将 MongoDB 中索引的组织形式总结如下：  
+
+|Index type|Key|Value|参考代码（4.0版本）|    
+|:-|:-|:-|:-|    
+|`_id` index|`KeyString` without `RecordId`|`RecordId` and optionally `TypeBits`| [WiredTigerIndexUnique::_insertTimestampUnsafe(r4.0.28)](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/wiredtiger/wiredtiger_index.cpp#L1344-L1407)|
+|non-unique index|`KeyString` with `RecordId`|optionally `TypeBits`| [WiredTigerIndexStandard::_insert(r4.0.28)](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/wiredtiger/wiredtiger_index.cpp#L1649-L1675)|
+|unique secondary index (new)|`KeyString` with `RecordId`|optionally `TypeBits`|[WiredTigerIndexUnique::_insertTimestampSafe(r4.0.28)](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/wiredtiger/wiredtiger_index.cpp#L1409-L1471)|
+|unique secondary index (old)|`KeyString` without `RecordId`|`RecordId` and opt. `TypeBits`| [WiredTigerIndexUnique::_insertTimestampUnsafe(r4.0.28)](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/wiredtiger/wiredtiger_index.cpp#L1344-L1407) |
+
+看到上表的内容，脑海中可能会浮现以下问题：   
+1. __为什么 RecordId 要放在 Key 部分？__   
+如果是根据 KeyString 找 RecordId，直观的想法是 KeyString 作为 Key，RecordId 作为 Value, 放在 KV 引擎中存储。当然可能还有 TypeBits 用于类型转换，和 RecordId 统一放在 Value 部分即可。  
+但是观察 non-unique index 可以发现 RecordId 是作为 KeyString 的后缀放在一起的。原因在于，KV 引擎中的 Key 是唯一的，但是索引中的 Key 是不唯一的，比如 {a: 1} 索引，很多文档的 "a" 字段都能等于 1，因此在存储索引的时候必须通过方法进行区分。
+在 MongoDB 中，由于每个文档都有独立的 RecordId，因此将 RecordId 作为后缀能够实现将非唯一的索引 Key 存放在（Key唯一）的 KV 引擎中。当然，带来的后果是在查询时需要通过__前缀匹配__来完成，因此查询时只知道索引字段，RecordId 是不知晓的。
+2. __唯一索引为什么也是用 RecordId 作为后缀？__   
+如果索引有唯一属性，就不存在上述第 1 个问题了。但是为什么 unique secondary index(new) 还是将 RecordId 作为 KeyString 的后缀呢？   
+的确，在早期 unique secondary index(old) 的设计中，是将 RecordId 放在 Value 部分的。但是问题在于，主从同步的时候，从节点的 oplog 回放是存在乱序的，回放时的乱序可能会临时打破索引的唯一性质，所以还是面临“非唯一” 到 “唯一”（KV引擎）的映射问题。当然，回到 RecordId 后缀方式之后，索引唯一性的检查逻辑会更复杂。   
+细心的同学可能发现，_id 也是（自带的）唯一索引，为啥就能把 RecordId 放在 Value 部分呢？因为 oplog 回放首先会通过 _id 进行哈希分桶，然后多个桶之间并发回放。也就是说 _id 不会存在乱序回放的问题，因此将 RecordId 挡在 Value 部分是没问题的。
+## 4.2 举例说明索引的查找过程
+
+
+# 5. 总结
+
+# 附录A：数值子类型定义
 参考[代码定义](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/key_string.cpp#L82-L103)，数值子类型从小到大的顺序如下：
 ```
 const uint8_t kNumericNaN = kNumeric + 0;
@@ -158,18 +271,7 @@ const uint8_t kNumericPositive8ByteInt = kNumeric + 20;
 const uint8_t kNumericPositiveLargeMagnitude = kNumeric + 21;  // >= 2**63 including +Inf
 ```
 
-
-对于 Double 和 Long 不存在交集的部分，比如 (-1, 0), (0, 1), (-∞, min<long>), (max<long>, +∞)，由于可以直接通过类型区分 Long 和 Double 的大小，所以值比较只会存在 Double 类型内部。因此，KeyString 对这些子类型的 Double 的编码相对容易很多，只需要按照 Double 原有格式稍作处理，然后使用大端模式编码即可。具体可以参考代码中 [KeyString::_appendSmallDouble](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/key_string.cpp#L887-L923) 和 [KeyString::_appendLargeDouble](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/key_string.cpp#L925-L948) 的处理流程。  
-
-对于 Double 和 Long 存在交集的部分，KeyString 对 Double 的编码需要在数据类型和整数格式上与 Long 对齐，然后再加上小数部分。由于小数部分导致 Double 的编码可能更长，因此会出现前文提到的变长类型比较错位的情况。比如 {"a" : NumberLong(129), "b" : "1"} 与 {"a": Double(129.125), "b": "2"} 转成 KeyString 进行比较，可能出现前一个值中的 "b" 字段与后一个值中 "a" 字段的小数部分进行比较的情况，这样会导致结果不准确。  
-KeyString 对整数部分的编码进行了巧妙的设计，来避免跨字段错位比较的问题。还是上面的例子，我们既然已经知道 Double(129.125) 存在有效小数位，可以直接通过整数部分的编码使得 Double(129.125) 的整数部分大于 Long(129)。具体的实现方式为：  
-1. 对于整型（Int/Long），[编码时左移一位](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/key_string.cpp#L1042)： value << 1， 比如 129 编码成 258;  
-2. 对于 Double，整数部分编码时左移一位，如果存在有效小数位，[则再加 1](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/key_string.cpp#L603)，比如 129.125 的整数部分编码为: (129<<1) + 1 = 259；如果 Double 不存在有效小数位，则编码方式和 Long 相同，[只移位不加1](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/key_string.cpp#L566).  
-
-![Double 转 KeyString流程](https://github.com/pengzhenyi2015/MongoDB-Kernel-Study/assets/16788801/d8e956e7-1c8a-46d3-a8ad-a2a208a77995)
-
-
-上述流程位于 [KeyString::_appendDoubleWithoutTypeBits](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/key_string.cpp#L589-L607) 中，上述例子的执行情况如下，通过注释来标识每一步的结果：  
+# 附录B：129.125 编码成 KeyString 的流程
 ```
 //integerPart= 129, fractionalBytes = 6
 const size_t fractionalBytes = countLeadingZeros64(integerPart << 1) / 8;
@@ -198,30 +300,7 @@ encoding = endian::nativeToBig(encoding);
 _append(encoding, isNegative ? !invert : invert);
 ```
 
-# 3. KeyString 性能
-再回到我们最开始的问题，BSON 的比较太复杂导致性能不佳，所以诞生了 KeyString，那么：   
-1. KeyString 的实际性能如何？
-2. 相比 BSON Compare，KeyString 能有多大改善？
-
-为了说明上述问题，我们对 KeyString 和 BSON 的比较性能进行性能测试。   
-
-## 3.1 测试方法
-1. 测试 2 条 BSON 文档，BSON compare 的平均耗时；
-2. 将 BSON 文档序列化成 KeyString（不包含 fieldName）， 测试 2 个 KeyString compare 的平均耗时；
-
-用于测试的 2 条 BSON 文档为：
-```
-第 1 条 BSON 文档：
-{"id":"zhenyitest", "description": "test performance of BSON compare", "int": NumberInt(1234), "long": NumberLong(123456789), "double1": 1.23456789, "double2":12345678.9}
-第 2 条 BSON 文档：
-{"id":"zhenyitest", "description": "test performance of BSON compare", "int": NumberInt(1234), "long": NumberLong(123456789), "double1": 1.23456789, "double2":12345678.8}
-```
-值的注意的是，这 2 条 BSON 唯一的区别是最后一个 Double 类型的小数位不同。这样 BSON/KeyString 在比较时，会依次比较 String/Int/Long/Double 多种类型，并在最后一个 Double 类型上决一胜负。
-
-## 3.2 测试工具
-测试工具为 MongoDB [内核代码内置的 Benchmark 框架](https://github.com/mongodb/mongo/wiki/Write-Benchmark-Tests), 源于 Google Benchmark.
-
-测试代码为：
+# 附录C：KeyString 和 BSON compare 流程的 Benchmark 代码
 ```
 BSONObj bson1 = BSON("id" << "zhenyitest"
                     << "description" << "test performance of BSON compare"
@@ -370,76 +449,3 @@ void BM_StripBSON2KeyString(benchmark::State& state) {
 BENCHMARK(BM_StripBSON2KeyString)
     ->ThreadRange(1, 1);
 ```
-
-## 3.3 结果分析
-测试结果如下：
-```
-Run on (8 X 2992.97 MHz CPU s)
-----------------------------------------------------------------------------
-Benchmark                                     Time           CPU Iterations
-----------------------------------------------------------------------------
-BM_BSONCompare/threads:1                    173 ns        173 ns    4152481
-BM_BSON2KeyStringCompare/threads:1          689 ns        688 ns     840071
-BM_KeyStringCompare/threads:1                 6 ns          6 ns  122880289
-BM_BSON2KeyString/threads:1                 316 ns        315 ns    2218813
-BM_BSON2Strip/threads:1                     106 ns        105 ns    7145237
-BM_StripBSON2KeyString/threads:1            217 ns        215 ns    3229084
-```
-
-BSON 直接比较平均耗时： __173 ns__；  
-2 个 BSON 都转成 KeyString 再比较：__689 ns__  
-- 其中，KeyString 的比较只需要 __6 ns__  , 但是每个 BSON 转 KeyString 需要 300+ ns  
-    - 其中转换的第一步：strip BSON 的 fieldName 耗时 100+ ns  
-    - 转换的第二步：BSON 转 KeyString 耗时 200+ns  
-
-总结：  
-1.  KeyString 的比较性能相比 BSON 提升了1-2 个数量级；  
-2.  但是 BSON 生成 KeyString 的代价比较大。因此**适合 1 次生成多次比较的场景**，索引就是最典型的场景；  
-3.  对于非一次生成多次使用的场景，直接使用 BSON 进行比较反而更合适。比如[内存排序（SORT_STAGE）比较算法](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/exec/sort.cpp#L64)就是直接使用的 BSON compare.
-
-# 4. KeyString 在索引中的使用
-## 4.1 MongoDB 索引的组织形式
-MongoDB 中的索引，在 WiredTiger 存储引擎中使用 Key-Value 对的方式进行组织和存储。我们知道数据库中索引的作用，就是根据索引字段的值快速找到文档/数据行的存储位置，即建立索引字段到存储位置的映射。其中索引字段的值采用 KeyString 来表示，而存储位置则是由 RecordId 来表示。    
-
-KeyString 在本文已经有了详细描述，这里有必要说明一下 RecordId 的概念。我们知道 MongoDB 是 schema-free 的，每个表没有明确的主键，那么 MongoDB 表在底层 KV 引擎中怎么组织呢？或者说在 KV 引擎中存储的时候 Value 是 BSON 文档，那么 Key 是什么？   
-
->可能有人会反驳说 `_id` 是 MongoDB 中的主键，但我认为并不准确。原因1： MongoDB 并不使用 _id 来组织表，如果直接使用 _id 字段查数据，也要先查 _id 索引，再查表，通俗一点说就是要查 2 个 Btree；原因2：有些表没有 _id 字段（比如 oplog 表）。因此，_id 索引一个特殊的索引，自带唯一属性，行为上和二级索引类似。
-
-为了解决没有主键的问题，MongoDB 在 KV 引擎中存储数据时，为每条文档指定了一个唯一的 RecordId. MongoDB 中每个表都有独立的 RecordId 命名空间，RecordId 本质上是一个从 1 开始的 int64 整数。MongoDB 使用 (RecordId, BSON) 的 KV 对形式在 KV 引擎中存储数据。   
-
-MongoDB 中使用索引查询数据会有 2 个阶段：  
-1. __查索引__，通过索引字段的 KeyString 找到对应的 RecordId；
-2. __查数据__, 根据 RecordId 找到 BSON 文档；
-
-RecordId 可以作为一个可选项在 KeyString 存储，一般会作为后缀的形式存在。在 Keystring 的编码上，并没有直接使用 8 字节存储 RecordId 的值，而是采用了变长编码的形式。规则如下：
-1. 头字节的头 3 个 bit，以及尾字节的末尾 3 个 bit, 存储了编码所需的额外字节数。由于 3 个 bit 最大能表示的数是 7，所以 RecordId 最多能占用的字节数为 7+2=9, 其中数据的有效 bit 占位为 9*8-(2*3) = 66。RecordId 最少占用的字节数为 2 字节；
-2. 除去头尾各 3 个 bit 外，其余的 bit 表示了 RecordId 的 int64 值；
-
-举例如下，看看 RecordId(259) 和 RecordId(65536) 在 KeyString 中是如何编码的：   
-![image](https://github.com/pengzhenyi2015/MongoDB-Kernel-Study/assets/16788801/c1e5f9ca-cb24-4d82-a7e3-b5997484a719)
-
-相关代码可以参考 [KeyString::appendRecordId](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/key_string.cpp#L387-L431)
-> 为什么 RecordId 要使用变长编码，而不是直接用 8 字节表示。我认为是 RecordId 作为一个从 1 开始自增的 id, 绝大多数情况下都不足 8 字节，甚至不足 4 字节。变长编码应该还是为了节省空间。
-
-结合 [官方文档](https://github.com/mongodb/mongo/blob/r5.0.0/src/mongo/db/catalog/README.md#use-in-wiredtiger-indexes) 和代码，将 MongoDB 中索引的组织形式总结如下：  
-
-|Index type|Key|Value|参考代码（4.0版本）|    
-|:-|:-|:-|:-|    
-|`_id` index|`KeyString` without `RecordId`|`RecordId` and optionally `TypeBits`| [WiredTigerIndexUnique::_insertTimestampUnsafe(r4.0.28)](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/wiredtiger/wiredtiger_index.cpp#L1344-L1407)|
-|non-unique index|`KeyString` with `RecordId`|optionally `TypeBits`| [WiredTigerIndexStandard::_insert](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/wiredtiger/wiredtiger_index.cpp#L1649-L1675)|
-|unique secondary index (new)|`KeyString` with `RecordId`|optionally `TypeBits`|[WiredTigerIndexUnique::_insertTimestampSafe(r4.0.28)](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/wiredtiger/wiredtiger_index.cpp#L1409-L1471)|
-|unique secondary index (old)|`KeyString` without `RecordId`|`RecordId` and opt. `TypeBits`| [WiredTigerIndexUnique::_insertTimestampUnsafe(r4.0.28)](https://github.com/mongodb/mongo/blob/r4.0.28/src/mongo/db/storage/wiredtiger/wiredtiger_index.cpp#L1344-L1407) |
-
-看到上表的内容，脑海中可能会浮现以下问题：   
-1. __为什么 RecordId 要放在 Key 部分？__   
-如果是根据 KeyString 找 RecordId，直观的想法是 KeyString 作为 Key，RecordId 作为 Value, 放在 KV 引擎中存储。当然可能还有 TypeBits 用于类型转换，和 RecordId 统一放在 Value 部分即可。  
-但是观察 non-unique index 可以发现 RecordId 是作为 KeyString 的后缀放在一起的。原因在于，KV 引擎中的 Key 是唯一的，但是索引中的 Key 是不唯一的，比如 {a: 1} 索引，很多文档的 "a" 字段都能等于 1，因此在存储索引的时候必须通过方法进行区分。
-在 MongoDB 中，由于每个文档都有独立的 RecordId，因此将 RecordId 作为后缀能够实现将非唯一的索引 Key 存放在（Key唯一）的 KV 引擎中。当然，带来的后果是在查询时需要通过__前缀匹配__来完成，因此查询时只知道索引字段，RecordId 是不知晓的。
-2. __唯一索引为什么也是用 RecordId 作为后缀？__   
-如果索引有唯一属性，就不存在上述第 1 个问题了。但是为什么 unique secondary index(new) 还是将 RecordId 作为 KeyString 的后缀呢？   
-的确，在早期 unique secondary index(old) 的设计中，是将 RecordId 放在 Value 部分的。但是问题在于，主从同步的时候，从节点的 oplog 回放是存在乱序的，回放时的乱序可能会临时打破索引的唯一性质，所以还是面临“非唯一” 到 “唯一”（KV引擎）的映射问题。当然，回到 RecordId 后缀方式之后，索引唯一性的检查逻辑会更复杂。   
-细心的同学可能发现，_id 也是（自带的）唯一索引，为啥就能把 RecordId 放在 Value 部分呢？因为 oplog 回放首先会通过 _id 进行哈希分桶，然后多个桶之间并发回放。也就是说 _id 不会存在乱序回放的问题，因此将 RecordId 挡在 Value 部分是没问题的。
-## 4.2 举例说明索引的查找过程
-
-
-# 5. 总结
