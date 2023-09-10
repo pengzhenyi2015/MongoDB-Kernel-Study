@@ -7,9 +7,12 @@ Raft 的诞生实践较晚，相对 Paxos来说非常好理解。从 Raft 自身
 MongoDB 使用的一致性协议可以看作是 Raft 协议的一个变种，同样使用了强主的模式来定序，使用日志复制到大多数节点来提交请求。但是 MongoDB 在落地过程中，相比于原生 Raft 协议还是有不少改进，包括但不限于更丰富的节点状态、乱序提交、从节点拉日志、链式复制、可调一致性、Logless Reconfig 等。      
 最初看 MongoDB 代码，我感觉代码非常复杂。但是随着对 MongoDB 的理解逐步深入，经历了比较多的业务使用场景，处理了比较多的线上问题处理之后，越来越觉得 MongoDB 一致性协议的牛逼之处。    
 
-本章分为以下几个部分阐述：   
+本章分为以下几个部分阐述，首先是常见的分布式系统的核心概念，在 MongoDB 中也非常重要：   
 1. 一致性协议：Raft 和 MongoRaft. 首先从原生 Raft 入手，从 Raft 论文简要了解其设计思想和系统流程。然后重点介绍 MongoDB 的一致性协议，并分析相比原生 Raft 所作的改动以及会带来哪些效果。    
 2. Oplog. Oplog 是复制集核心中的核心，如何实现高效复制、可见性判断、系统故障恢复、空间回收都是非常关键的话题。
+
+另外，说到分布式系统，不得不提 CAP 定理。而为了搞明白 MongoDB 是 AP 还是 CP 系统，需要先明白 ReadPreference，WriteConcern 和 ReadConcern 这些核心概念。MongoDB 通过 ReadPreference 支持用户灵活选择读哪个节点，通过 WriteConcern 支持请求持久化到多少个节点之后再返回结果，通过 ReadConcern 制定读取哪些数据版本。因此接下来会分几个部分进行分析：
+
 3. ReadPreference 和读写分离。
-4. Write concern 和数据安全。
-5. Read concern.
+4. WriteConcern 和数据安全。
+5. ReadConcern.
