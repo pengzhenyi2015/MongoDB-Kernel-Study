@@ -1,5 +1,7 @@
 截止目前，MongoDB 距离 2007 年发布第一个版本（github数据）已经将近 20 年，从最开始的”小众数据库“发展为了可以承载海量业务数据的核心数据库系统。在此期间，支持了插件式引擎，引入了 WiredTiger 存储引擎（3.2 版本），支持了因果一致性，changeStream(3.6 版本)，支持了事务（4.0 版本） 和分布式事务（4.2版本），支持了时序并持续优化其性能（5.0版本）, 持续丰富索引和聚合算子等基础能力。随着功能和性能的不断增强，目前 MongoDB 已经成为了全球流行度前 5 的数据库，流行度第 1 的文档数据库。参考 [DB-Engines Ranking](https://db-engines.com/en/ranking):     
-<img src="https://github.com/pengzhenyi2015/MongoDB-Kernel-Study/assets/16788801/400e62c8-c159-4b97-871a-8dfe9e559c9c" width=700>
+<p align="center">
+  <img src="https://github.com/pengzhenyi2015/MongoDB-Kernel-Study/assets/16788801/400e62c8-c159-4b97-871a-8dfe9e559c9c" width=700>
+</p>
 
 当我们在看一款数据库时，首先会去了解它有哪些特性，适应哪些场景，并自然地同当前最流行的数据库进行对比（比如 MySQL, Redis 等）。     
 MongoDB 最重要的特性有：
