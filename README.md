@@ -10,6 +10,7 @@ MongoDB 作为一个开源文档数据库，凭借其灵活可扩展、分布式
 于是，在后面的工作中主动熟悉 MongoDB 代码，分析社区 jira，做了很多的测试验证。在此过程中，自己记录很多的笔记和心得体会。现在通过 Github/Gitbook 进行总结，希望对学习 MongoDB 的开发者和运维人员有一定的帮助。
 
 # 推荐的 MongoDB 学习资料
+有一些公开的文档和书籍非常值得学习，它们详细介绍了 MongoDB 的基本原理、操作和架构设计的相关知识。列举如下：   
 |参考文档|	链接|
 |:--|:--|
 |MongoDB 官方操作手册|	https://www.mongodb.com/docs/manual/|
@@ -20,6 +21,16 @@ MongoDB 作为一个开源文档数据库，凭借其灵活可扩展、分布式
 |WiredTiger 官方文档|	https://source.wiredtiger.com/3.2.1/index.html|
 |WiredTiger Github Wiki|	https://github.com/wiredtiger/wiredtiger/wiki|
 |一些中文电子书|	https://github.com/y123456yz/reading-and-annotate-mongodb-3.6/tree/master/%E6%96%87%E6%A1%A3%E5%8F%82%E8%80%83|
+
+# 写作框架
+本书计划分为下面几个章节进行阐述：   
+1. 文档模型。说明 MongoDB 为什么被称为文档数据库。      
+2. 复制集。深入分析 MongoDB 的一致性算法，以及 oplog、writeConcern、readPreference、readConcern 等特性的实现原理及其发挥的作用。   
+3. 分片。包括分片集群的原理，以及路由、数据均衡等核心模块的实现。  
+4. 执行器。包括锁和并发控制、执行计划的生成、副本集事务和分布式事务的实现。  
+5. 最佳实践。包括一些业务的 MongoDB 使用经验，以及使用过程中经常会碰到的坑。  
+6. 一些有趣的问题。主要来源于平时工作中和同事茶余饭后探讨的一些有趣话题。   
+
 
 # 特别说明
 1. MongoDB 官方已经提供了比较丰富的学习资料。因此，本书主要结合内核代码对 MongoDB 的核心模块进行深入分析，并尽量避免和业界现有的资料重复。另外会结合自身积累的 MongoDB 运营经验对 MongoDB 的使用场景提出一些解决方案；
