@@ -13,14 +13,14 @@ MongoDB 作为一个开源文档数据库，凭借其灵活可扩展、分布式
 有一些公开的文档和书籍非常值得学习，它们详细介绍了 MongoDB 的基本原理、操作和架构设计的相关知识。列举如下：   
 |参考文档|	链接|
 |:--|:--|
-|MongoDB 官方操作手册|	https://www.mongodb.com/docs/manual/|
-|MongoDB Github Wiki|	https://github.com/mongodb/mongo/wiki<br>强烈推荐 Wiki 中关于 Sharding 和 Replication 的描述，每次学习都受益匪浅|
-|MongoDB 官方课程|	https://learn.mongodb.com/|
-|MongoDB 中文社区|	https://mongoing.com/|
-|MongoDB 官方设计文档|	https://github.com/mongodb/specifications/tree/master|
-|WiredTiger 官方文档|	https://source.wiredtiger.com/3.2.1/index.html|
-|WiredTiger Github Wiki|	https://github.com/wiredtiger/wiredtiger/wiki|
-|一些中文电子书|	https://github.com/y123456yz/reading-and-annotate-mongodb-3.6/tree/master/%E6%96%87%E6%A1%A3%E5%8F%82%E8%80%83|
+|MongoDB 官方操作手册|	[https://www.mongodb.com/docs/manual/](https://www.mongodb.com/docs/manual/)|
+|MongoDB Github Wiki|	[https://github.com/mongodb/mongo/wiki](https://github.com/mongodb/mongo/wiki)<br>强烈推荐 Wiki 中关于 Sharding 和 Replication 的描述，每次学习都受益匪浅|
+|MongoDB 官方课程|	[https://learn.mongodb.com/](https://learn.mongodb.com/)|
+|MongoDB 中文社区|	[https://mongoing.com/](https://mongoing.com/)|
+|MongoDB 官方设计文档|	[https://github.com/mongodb/specifications/tree/master](https://github.com/mongodb/specifications/tree/master)|
+|WiredTiger 官方文档|	[https://source.wiredtiger.com/3.2.1/index.html](https://source.wiredtiger.com/3.2.1/index.html)|
+|WiredTiger Github Wiki|	[https://github.com/wiredtiger/wiredtiger/wiki](https://github.com/wiredtiger/wiredtiger/wiki)|
+|一些中文电子书|	[https://github.com/y123456yz/reading-and-annotate-mongodb-3.6/tree/master/%E6%96%87%E6%A1%A3%E5%8F%82%E8%80%83](https://github.com/y123456yz/reading-and-annotate-mongodb-3.6/tree/master/%E6%96%87%E6%A1%A3%E5%8F%82%E8%80%83)|
 
 # 写作框架
 本书计划分为下面几个章节进行阐述：   
@@ -33,10 +33,10 @@ MongoDB 作为一个开源文档数据库，凭借其灵活可扩展、分布式
 
 
 # 特别说明
-1. MongoDB 官方已经提供了比较丰富的学习资料。因此，本书主要结合内核代码对 MongoDB 的核心模块进行深入分析，并尽量避免和业界现有的资料重复。另外会结合自身积累的 MongoDB 运营经验对 MongoDB 的使用场景提出一些解决方案；
-2. MongoDB 内核版本的迭代速度很快，很多模块都会不断进行优化和重构，并增加新功能。因此，本书中涉及到的原理和代码分析会注明版本（以 4.0/4.2/4.4/5.0 为主），并给出对应的代码链接。如果引用了第 3 方的资料，也会通过链接注明出处；
-3. 除非特别说明，书中的分析和测试都是基于 linux x86_64 架构；
-4. 转载请注明出处；
+1. MongoDB 官方已经提供了比较丰富的学习资料。因此，本书主要结合内核代码对 MongoDB 的核心模块进行深入分析，并尽量避免和业界现有的资料重复。另外会结合自身积累的 MongoDB 运营经验对 MongoDB 的使用场景提出一些解决方案。    
+2. MongoDB 内核版本的迭代速度很快，很多模块都会不断进行优化和重构，并增加新功能。因此，本书中涉及到的原理和代码分析会注明版本（以 4.0/4.2/4.4/5.0 为主），并给出对应的代码链接。如果引用了第 3 方的资料，也会通过链接注明出处。    
+3. 除非特别说明，书中的分析和测试都是基于 linux x86_64 架构。    
+4. 转载请注明出处，意见和建议请反馈至 github：[https://github.com/pengzhenyi2015/MongoDB-Kernel-Study](https://github.com/pengzhenyi2015/MongoDB-Kernel-Study)
 
 # 作者
 彭振翼、尹超
