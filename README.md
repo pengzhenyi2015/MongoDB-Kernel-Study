@@ -1,17 +1,3 @@
----
-layout:
-  title:
-    visible: true
-  description:
-    visible: true
-  tableOfContents:
-    visible: true
-  outline:
-    visible: true
-  pagination:
-    visible: true
----
-
 # README
 
 ## 写作目的
@@ -61,7 +47,7 @@ MongoDB 作为一个开源文档数据库，凭借其灵活可扩展、分布式
 
 ## 作者
 
-彭振翼、尹超
+彭振翼、尹超、杨林、杨哲、何洋
 
 ***
 
