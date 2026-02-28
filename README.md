@@ -44,6 +44,7 @@ MongoDB 作为一个开源文档数据库，凭借其灵活可扩展、分布式
 2. MongoDB 内核版本的迭代速度很快，很多模块都会不断进行优化和重构，并增加新功能。因此，本书中涉及到的原理和代码分析会注明版本（以 4.0/4.2/4.4/5.0 为主），并给出对应的代码链接。如果引用了第 3 方的资料，也会通过链接注明出处。
 3. 除非特别说明，书中的分析和测试都是基于 linux x86\_64 架构。
 4. 转载请注明出处，意见和建议请反馈至 github：[https://github.com/pengzhenyi2015/MongoDB-Kernel-Study](https://github.com/pengzhenyi2015/MongoDB-Kernel-Study)
+5. Gitee 同步镜像（适合不方便访问 github 的读者）：[https://gitee.com/pengzhenyi2015/MongoDB-Kernel-Study](https://gitee.com/pengzhenyi2015/MongoDB-Kernel-Study)
 
 ## 作者
 
